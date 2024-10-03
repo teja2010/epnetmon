@@ -9,3 +9,6 @@ lint:
 
 build:
 	go build -o bin/epnetmon cmd/epnetmon/*.go
+
+test:
+	go test -v ./...
