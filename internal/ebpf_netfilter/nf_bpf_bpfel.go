@@ -13,13 +13,15 @@ import (
 )
 
 type nf_bpfFlowStatsT struct {
+	Pid   uint64
+	Comm  [16]uint8
 	Bytes uint64
 	Pkts  uint64
 }
 
 type nf_bpfFlowT struct {
 	Protocol  uint16
-	_         [2]byte
+	Hole      [2]uint8
 	Ipv4Saddr uint32
 	Ipv4Daddr uint32
 	Dport     uint16
@@ -27,10 +29,14 @@ type nf_bpfFlowT struct {
 }
 
 type nf_bpfMetricsT struct {
-	PktCount            uint64
-	Tcp4PktCount        uint64
-	FlowNotFound        uint64
-	ErrInnerMapNotFound uint64
+	PktCount                 uint64
+	Tcp4PktCount             uint64
+	Udp4PktCount             uint64
+	OtherIp4ProtocolPktCount uint64
+	FlowNotFound             uint64
+	ErrInnerMapNotFound      uint64
+	ErrCurrentCommFailed     uint64
+	ErrInnerMapInsertFailed  uint64
 }
 
 // loadNf_bpf returns the embedded CollectionSpec for nf_bpf.
@@ -81,8 +87,9 @@ type nf_bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type nf_bpfMapSpecs struct {
-	CountMap   *ebpf.MapSpec `ebpf:"count_map"`
-	MetricsMap *ebpf.MapSpec `ebpf:"metrics_map"`
+	CountMap        *ebpf.MapSpec `ebpf:"count_map"`
+	CounterMapOfMap *ebpf.MapSpec `ebpf:"counter_map_of_map"`
+	MetricsMap      *ebpf.MapSpec `ebpf:"metrics_map"`
 }
 
 // nf_bpfObjects contains all objects after they have been loaded into the kernel.
@@ -104,13 +111,15 @@ func (o *nf_bpfObjects) Close() error {
 //
 // It can be passed to loadNf_bpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type nf_bpfMaps struct {
-	CountMap   *ebpf.Map `ebpf:"count_map"`
-	MetricsMap *ebpf.Map `ebpf:"metrics_map"`
+	CountMap        *ebpf.Map `ebpf:"count_map"`
+	CounterMapOfMap *ebpf.Map `ebpf:"counter_map_of_map"`
+	MetricsMap      *ebpf.Map `ebpf:"metrics_map"`
 }
 
 func (m *nf_bpfMaps) Close() error {
 	return _Nf_bpfClose(
 		m.CountMap,
+		m.CounterMapOfMap,
 		m.MetricsMap,
 	)
 }

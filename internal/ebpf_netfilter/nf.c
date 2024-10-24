@@ -12,6 +12,7 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 
 struct flow_t {
 	__u16 protocol;
+	__u8 hole[2];
 	__u32 ipv4_saddr;
 	__u32 ipv4_daddr;
 	__u16 dport;
@@ -19,31 +20,39 @@ struct flow_t {
 };
 
 struct flow_stats_t {
+	__u64 pid;
+	__u8 comm[TASK_COMM_LEN];
 	__u64 bytes;
 	__u64 pkts;
 };
 
-struct {
+struct count_map_t {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1000);
 	__type(key, struct flow_t);
 	__type(value, struct flow_stats_t);
 } count_map SEC(".maps");
 
-//struct {
-//	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-//	__uint(max_entries, 1);
-//	__type(key, __u32);
-//	__array(values, struct count_map_t);
-//} counter_map_of_map SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__array(values, struct count_map_t);
+} counter_map_of_map SEC(".maps") = {
+	.values = {&count_map}
+};
 
 struct metrics_t {
 	__u64 pkt_count;
 	__u64 tcp4_pkt_count;
+	__u64 udp4_pkt_count;
+	__u64 other_ip4_protocol_pkt_count;
 	__u64 flow_not_found;
 
 	// errors
 	__u64 err_inner_map_not_found;
+	__u64 err_current_comm_failed;
+	__u64 err_inner_map_insert_failed;
 };
 
 struct {
@@ -68,19 +77,9 @@ static inline void __nf_count(struct bpf_nf_ctx *ctx)
 	if (metrics == NULL)
 		return;
 
-	struct sock *sk = state->sk;
-	if (sk != NULL) {
-		u32 sk_uid = (u32)BPF_CORE_READ(sk, sk_uid).val;
-		if (sk_uid != 0) {
-			static const char fmt[] = "sk %p uid %d";
-			bpf_trace_printk(fmt, sizeof(fmt), sk, sk_uid);
-		}
-	}
-
 	metrics->pkt_count++;
 
 	const struct iphdr *iph, _iph;
-	const struct tcphdr *th, _th;
 	struct bpf_dynptr ptr;
 
 	if (bpf_dynptr_from_skb((struct __sk_buff *)skb, 0, &ptr))
@@ -90,36 +89,77 @@ static inline void __nf_count(struct bpf_nf_ctx *ctx)
 	if (!iph)
 		return;
 
-	if (iph->protocol != IPPROTO_TCP)
-		return;
+	__u16 sport = 0;
+	__u16 dport = 0;
 
-	th = bpf_dynptr_slice(&ptr, iph->ihl << 2, (void *)&_th, sizeof(_th));
-	if (!th)
-		return;
+	if (iph->protocol == IPPROTO_TCP) {
+		const struct tcphdr *th, _th;
 
-	metrics->tcp4_pkt_count++;
+		th = bpf_dynptr_slice(&ptr, iph->ihl << 2, (void *)&_th, sizeof(_th));
+		if (!th) {
+			return;
+		}
+		dport = th->dest,
+		sport = th->source,
+		metrics->tcp4_pkt_count++;
+
+	} else if (iph->protocol == IPPROTO_UDP) {
+		const struct udphdr *uh, _uh;
+
+		uh = bpf_dynptr_slice(&ptr, iph->ihl << 2, (void *)&_uh, sizeof(_uh));
+		if (!uh) {
+			return;
+		}
+		dport = uh->dest,
+		sport = uh->source,
+		metrics->udp4_pkt_count++;
+
+	} else {
+		// all other protocols, dont have ports
+		metrics->other_ip4_protocol_pkt_count++;
+	}
 
 	struct flow_t flow = {
 		.protocol = iph->protocol,
+		.hole = {0},
 		.ipv4_saddr = iph->saddr,
 		.ipv4_daddr = iph->daddr,
-		.dport = th->dest,
-		.sport = th->source,
+		.dport = dport,
+		.sport = sport,
 	};
 
-	//__u32 key = 0;
-	//struct count_map_t *inner_map;
-	//inner_map = bpf_map_lookup_elem(&counter_map_of_map, &key);
-	//if (inner_map == NULL) {
-	//	metrics->err_inner_map_not_found++;
-	//	return;
-	//}
+	__u32 key = 0;
+	struct count_map_t *inner_map;
+	inner_map = bpf_map_lookup_elem(&counter_map_of_map, &key);
+	if (inner_map == NULL) {
+		metrics->err_inner_map_not_found++;
+		return;
+	}
 
 	struct flow_stats_t *stat;
-	stat = bpf_map_lookup_elem(&count_map, &flow);
+	stat = bpf_map_lookup_elem(inner_map, &flow);
 	if (stat == NULL) {
 		metrics->flow_not_found++;
-		return;
+		if (state->hook == NF_INET_LOCAL_OUT) {
+			// get the pid and add a flow_stats_t in the inner_map
+			struct flow_stats_t stats = {
+				.pid = 0,
+				.comm = {0},
+				.bytes = 0,
+				.pkts =0,
+			};
+			struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+			stats.pid = (__u32) BPF_CORE_READ(task, pid);
+			BPF_CORE_READ_STR_INTO(&stats.comm, task, comm);
+
+			int ret = bpf_map_update_elem(inner_map, &flow, &stats, BPF_NOEXIST);
+			if (ret < 0) {
+				metrics->err_inner_map_insert_failed++;
+			}
+			stat = &stats;
+		} else {
+			return;
+		}
 	}
 
 	__sync_fetch_and_add(&stat->pkts, 1);
