@@ -13,13 +13,13 @@ lint:
 	golangci-lint run
 
 generate:
-	go generate ./internal/ebpf_netfilter
+	go generate ./...
 
 generate_vmlinux:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > internal/c_include/vmlinux.h
 
 .PHONY: build
-build:
+build: lint generate
 	go build -o bin/epnetmon cmd/epnetmon/*.go
 
 .PHONY: test

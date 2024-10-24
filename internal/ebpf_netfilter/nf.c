@@ -5,6 +5,8 @@
 #include <bpf/bpf_core_read.h>
 #include "bpf_kfuncs.h"
 
+char __license[] SEC("license") = "Dual MIT/GPL";
+
 #define NF_DROP 0
 #define NF_ACCEPT 1
 
@@ -57,7 +59,7 @@ void *get_metrics()
 	return bpf_map_lookup_elem(&metrics_map, &key);
 }
 
-void __nf_count(struct bpf_nf_ctx *ctx)
+static inline void __nf_count(struct bpf_nf_ctx *ctx)
 {
 	struct nf_hook_state *state = (struct nf_hook_state *)ctx->state;
 	struct sk_buff *skb = ctx->skb;
@@ -69,8 +71,10 @@ void __nf_count(struct bpf_nf_ctx *ctx)
 	struct sock *sk = state->sk;
 	if (sk != NULL) {
 		u32 sk_uid = (u32)BPF_CORE_READ(sk, sk_uid).val;
-		static const char fmt[] = "sk %p uid %d";
-		bpf_trace_printk(fmt, sizeof(fmt), sk, sk_uid);
+		if (sk_uid != 0) {
+			static const char fmt[] = "sk %p uid %d";
+			bpf_trace_printk(fmt, sizeof(fmt), sk, sk_uid);
+		}
 	}
 
 	metrics->pkt_count++;

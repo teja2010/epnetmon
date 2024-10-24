@@ -26,6 +26,7 @@ func main() {
 		log.SetReportCaller(true)
 		log.Info("epnetmon started")
 	}
+	log.Info("Writing logs to /tmp/epnetmon.log")
 
 	var (
 		debug       bool
@@ -35,6 +36,7 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "enable debug logs")
 	flag.StringVar(&backend, "b", "ebpf_nft", "choose a backend (ebpf_nft|nft|sock_diag|ebpf)")
 	flag.StringVar(&intervalArg, "i", "1s", "refresh interval e.g 1s, 250ms, 1min")
+	flag.Parse()
 
 	if debug {
 		log.SetLevel(log.DebugLevel)
@@ -43,11 +45,26 @@ func main() {
 	if err != nil {
 		log.Fatal("Error parsing interval", "error", err)
 	}
+	log.Info("read args")
 
 	var sr entity.SockReader
 	switch backend {
 	case "ebpf_nft":
+		bo, err := ebpf_netfilter.Load()
+		if err != nil {
+			log.Fatal("Error loading ebpf_netfilter progs", "error", err)
+		}
+		link, err := bo.Attach(
+			ebpf_netfilter.PROTOCOL_FAMILY_IPV4,
+			ebpf_netfilter.HOOK_LOCAL_OUT,
+			ebpf_netfilter.PRIORITY_FILTER)
+		if err != nil {
+			log.Fatal("Error attaching ebpf_netfilter prog", "error", err)
+		}
+		defer link.Close()
 		sr = ebpf_netfilter.NewEbpfNetfilterReader()
+	default:
+		log.Fatal("unknown backend", backend)
 	}
 	defer sr.Close()
 
